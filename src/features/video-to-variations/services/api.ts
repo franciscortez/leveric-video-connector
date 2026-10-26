@@ -34,17 +34,26 @@ async function setJob(id: string, kind: string | null): Promise<Project> {
 function job(id: string, kind: string, release: () => void, run: (send: (e: Record<string, unknown>) => void) => Promise<Record<string, unknown>>): Response {
   return ndjson(async (send) => {
     const context = operationContext.getStore();
-    if (context?.operationId) await beginOperation(id, context.operationId, context.kind ?? kind);
-    await setJob(id, kind);
+    let failed = false;
+    let stage = "record operation";
     try {
+      if (context?.operationId) await beginOperation(id, context.operationId, context.kind ?? kind);
+      stage = "save job marker";
+      await setJob(id, kind);
+      stage = "process media";
       const result = await run(send);
       await finishOperation(id, "completed", result);
       return result;
     } catch (error) {
-      await finishOperation(id, "failed", undefined, errorEvent(error));
+      failed = true;
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "unknown";
+      console.error("Video operation failed", { stage, code });
+      try { await finishOperation(id, "failed", undefined, errorEvent(error)); }
+      catch { console.error("Could not persist failed video operation"); }
       throw error;
     } finally {
-      await setJob(id, null);
+      try { await setJob(id, null); }
+      catch (error) { console.error("Could not clear video job marker"); if (!failed) throw error; }
     }
   }, release);
 }
